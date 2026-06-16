@@ -1,0 +1,25 @@
+[Unit]
+Description=Team AI Stack (vLLM + LiteLLM + Open WebUI)
+Documentation=file://@INSTALL_DIR@/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@INSTALL_DIR@
+# Ensure compose finds the .env file in WorkingDirectory
+Environment=COMPOSE_PROJECT_NAME=team-ai
+
+# Resolve "docker compose" (v2 plugin)
+ExecStart=/bin/bash -c 'cd "@INSTALL_DIR@" && docker compose up -d --remove-orphans'
+ExecStop=/bin/bash -c 'cd "@INSTALL_DIR@" && docker compose down'
+ExecReload=/bin/bash -c 'cd "@INSTALL_DIR@" && docker compose up -d --remove-orphans'
+
+# vLLM model load can take 10–20 minutes on first boot
+TimeoutStartSec=1800
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

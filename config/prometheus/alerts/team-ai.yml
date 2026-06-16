@@ -1,0 +1,48 @@
+groups:
+  - name: team-ai
+    rules:
+      - alert: VLLMDown
+        expr: up{job="vllm"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vLLM is unreachable"
+          description: "Prometheus cannot scrape vLLM metrics for more than 2 minutes."
+
+      - alert: LiteLLMDown
+        expr: up{job="litellm"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM is unreachable"
+          description: "Prometheus cannot scrape LiteLLM metrics for more than 2 minutes."
+
+      - alert: GPUHighMemory
+        expr: |
+          (DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)) > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU VRAM above 95%"
+          description: "GPU framebuffer usage exceeds 95% for 5 minutes."
+
+      - alert: VLLMQueueHigh
+        expr: vllm_num_requests_waiting > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vLLM request queue is backing up"
+          description: "More than 10 requests waiting in vLLM for 5 minutes."
+
+      - alert: HighLiteLLMErrorRate
+        expr: increase(litellm_proxy_total_requests_metric_total{status_code=~"5.."}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated LiteLLM 5xx responses"
+          description: "LiteLLM returned more than 10 server errors in 5 minutes."

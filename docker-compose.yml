@@ -1,0 +1,314 @@
+# Pin versions after validation; override in .env if needed.
+x-image-tags:
+  vllm: &vllm_image vllm/vllm-openai:v0.8.5
+  litellm: &litellm_image ghcr.io/berriai/litellm-database:main-v1.63.11
+  open_webui: &open_webui_image ghcr.io/open-webui/open-webui:v0.6.15
+  ollama: &ollama_image ollama/ollama:0.5.11
+  dcgm: &dcgm_image nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
+  alertmanager: &alertmanager_image prom/alertmanager:v0.28.1
+  loki: &loki_image grafana/loki:3.4.2
+  promtail: &promtail_image grafana/promtail:3.4.2
+  presidio_analyzer: &presidio_analyzer_image mcr.microsoft.com/presidio-analyzer:2.2.33
+  presidio_anonymizer: &presidio_anonymizer_image mcr.microsoft.com/presidio-anonymizer:2.2.33
+
+services:
+  vllm:
+    image: *vllm_image
+    container_name: ai-vllm
+    restart: unless-stopped
+    ipc: host
+    shm_size: "16gb"
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    command:
+      - --model
+      - ${VLLM_MODEL}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN}
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION}
+      - --max-num-seqs
+      - ${VLLM_MAX_NUM_SEQS}
+      - --max-num-batched-tokens
+      - "8192"
+      - --kv-cache-dtype
+      - fp8
+      - --enable-prefix-caching
+      - --limit-mm-per-prompt
+      - '{"image": 0, "audio": 0}'
+      - --trust-remote-code
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - gemma4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 600s
+    networks:
+      - ai-internal
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-internal
+
+  presidio-analyzer:
+    image: *presidio_analyzer_image
+    container_name: ai-presidio-analyzer
+    restart: unless-stopped
+    networks:
+      - ai-internal
+
+  presidio-anonymizer:
+    image: *presidio_anonymizer_image
+    container_name: ai-presidio-anonymizer
+    restart: unless-stopped
+    networks:
+      - ai-internal
+
+  litellm:
+    image: *litellm_image
+    container_name: ai-litellm
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      presidio-analyzer:
+        condition: service_started
+      presidio-anonymizer:
+        condition: service_started
+      vllm:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      STORE_MODEL_IN_DB: "True"
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - ai-internal
+
+  ollama:
+    image: *ollama_image
+    container_name: ai-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    # CPU-only embeddings — do not reserve GPU (vLLM owns the A6000)
+    environment:
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ai-internal
+
+  ollama-init:
+    image: *ollama_image
+    container_name: ai-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Pulling embedding model..."
+        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text
+        echo "Embedding model ready."
+    networks:
+      - ai-internal
+
+  open-webui:
+    image: *open_webui_image
+    container_name: ai-open-webui
+    restart: unless-stopped
+    depends_on:
+      litellm:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
+      ENABLE_SIGNUP: "false"
+      DEFAULT_MODELS: gemma-4-31b
+      ENABLE_DIRECT_CONNECTIONS: "true"
+      ENABLE_OAUTH_SIGNUP: ${ENABLE_OAUTH_SIGNUP:-false}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-}
+      OPENID_PROVIDER_URL: ${OPENID_PROVIDER_URL:-}
+      OAUTH_PROVIDER_NAME: ${OAUTH_PROVIDER_NAME:-SSO}
+      OAUTH_SCOPES: ${OAUTH_SCOPES:-openid email profile}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_TENANT_ID: ${MICROSOFT_CLIENT_TENANT_ID:-}
+      RAG_EMBEDDING_ENGINE: ollama
+      RAG_EMBEDDING_MODEL: nomic-embed-text
+      RAG_OLLAMA_BASE_URL: http://ollama:11434
+      ENABLE_RAG_HYBRID_SEARCH: "true"
+      RAG_TOP_K: "5"
+      CHUNK_SIZE: "1500"
+      CHUNK_OVERLAP: "100"
+      WEBUI_BANNERS: ${WEBUI_BANNERS:-}
+    volumes:
+      - open-webui-data:/app/backend/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - ai-internal
+
+  dcgm-exporter:
+    image: *dcgm_image
+    container_name: ai-dcgm-exporter
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - ai-internal
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: ai-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - ai-internal
+
+  alertmanager:
+    image: *alertmanager_image
+    container_name: ai-alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - ai-internal
+
+  loki:
+    image: *loki_image
+    container_name: ai-loki
+    restart: unless-stopped
+    volumes:
+      - ./config/loki/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - ai-internal
+
+  promtail:
+    image: *promtail_image
+    container_name: ai-promtail
+    restart: unless-stopped
+    volumes:
+      - ./config/promtail/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    networks:
+      - ai-internal
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: ai-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - ai-internal
+
+volumes:
+  huggingface-cache:
+  postgres-data:
+  open-webui-data:
+  prometheus-data:
+  grafana-data:
+  ollama-data:
+  loki-data:
+
+networks:
+  ai-internal:
+    driver: bridge

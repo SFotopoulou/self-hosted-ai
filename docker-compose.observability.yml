@@ -1,0 +1,138 @@
+# Optional observability stack (Langfuse for agent/request tracing).
+# Usage: docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
+#
+# After first start, create a Langfuse project at http://127.0.0.1:3101 and copy API keys to .env:
+#   LANGFUSE_PUBLIC_KEY=pk-lf-...
+#   LANGFUSE_SECRET_KEY=sk-lf-...
+# Then restart LiteLLM: docker compose restart litellm
+
+services:
+  litellm:
+    volumes:
+      - ./config/litellm/config.observability.yaml:/app/config.yaml:ro
+    depends_on:
+      langfuse:
+        condition: service_started
+
+  langfuse:
+    profiles: [observability]
+    image: langfuse/langfuse:3.72.0
+    container_name: ai-langfuse
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_started
+      langfuse-clickhouse:
+        condition: service_started
+      langfuse-minio:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-langfuse}:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:-langfuse}
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      NEXTAUTH_URL: http://127.0.0.1:3101
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-change-me-langfuse-nextauth}
+      SALT: ${LANGFUSE_SALT:-change-me-langfuse-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "127.0.0.1:3101:3000"
+    networks:
+      - ai-internal
+
+  langfuse-worker:
+    profiles: [observability]
+    image: langfuse/langfuse-worker:3.72.0
+    container_name: ai-langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      - langfuse-postgres
+      - langfuse-redis
+      - langfuse-clickhouse
+      - langfuse-minio
+    environment:
+      DATABASE_URL: postgresql://${LANGFUSE_POSTGRES_USER:-langfuse}:${LANGFUSE_POSTGRES_PASSWORD:-langfuse}@langfuse-postgres:5432/${LANGFUSE_POSTGRES_DB:-langfuse}
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_USER: ${LANGFUSE_CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+      REDIS_HOST: langfuse-redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_ACCESS_KEY:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_SECRET_KEY:-miniosecret}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      SALT: ${LANGFUSE_SALT:-change-me-langfuse-salt}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      TELEMETRY_ENABLED: "false"
+    networks:
+      - ai-internal
+
+  langfuse-postgres:
+    profiles: [observability]
+    image: postgres:16-alpine
+    container_name: ai-langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${LANGFUSE_POSTGRES_USER:-langfuse}
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-langfuse}
+      POSTGRES_DB: ${LANGFUSE_POSTGRES_DB:-langfuse}
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LANGFUSE_POSTGRES_USER:-langfuse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-internal
+
+  langfuse-redis:
+    profiles: [observability]
+    image: redis:7-alpine
+    container_name: ai-langfuse-redis
+    restart: unless-stopped
+    networks:
+      - ai-internal
+
+  langfuse-clickhouse:
+    profiles: [observability]
+    image: clickhouse/clickhouse-server:24.12
+    container_name: ai-langfuse-clickhouse
+    restart: unless-stopped
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+    networks:
+      - ai-internal
+
+  langfuse-minio:
+    profiles: [observability]
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: ai-langfuse-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_SECRET_KEY:-miniosecret}
+    volumes:
+      - langfuse-minio-data:/data
+    networks:
+      - ai-internal
+
+volumes:
+  langfuse-postgres-data:
+  langfuse-clickhouse-data:
+  langfuse-minio-data:

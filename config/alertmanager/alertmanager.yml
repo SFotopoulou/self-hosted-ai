@@ -1,0 +1,25 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # Alerts appear in the Alertmanager UI until you configure Slack/email below.
+    # slack_configs:
+    #   - send_resolved: true
+    #     api_url: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+    #     title: "{{ .GroupLabels.alertname }}"
+    #     text: "{{ range .Alerts }}{{ .Annotations.description }}{{ end }}"
+
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ["alertname"]

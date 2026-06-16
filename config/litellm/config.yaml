@@ -1,0 +1,28 @@
+model_list:
+  - model_name: gemma-4-31b
+    litellm_params:
+      model: openai/google/gemma-4-31B-it-qat-w4a16-ct
+      api_base: http://vllm:8000/v1
+      api_key: "local"
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_prompts_in_spend_logs: true
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 600
+
+guardrails:
+  - guardrail_name: pii-mask
+    litellm_params:
+      guardrail: presidio
+      mode: pre_call
+      default_on: true
+      presidio_analyzer_api_base: http://presidio-analyzer:3000
+      presidio_anonymizer_api_base: http://presidio-anonymizer:3000
+
+router_settings:
+  routing_strategy: simple-shuffle
