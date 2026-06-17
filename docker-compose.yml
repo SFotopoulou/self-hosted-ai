@@ -1,15 +1,15 @@
 # Pin versions after validation; override in .env if needed.
 x-image-tags:
-  vllm: &vllm_image vllm/vllm-openai:v0.8.5
-  litellm: &litellm_image ghcr.io/berriai/litellm-database:main-v1.63.11
-  open_webui: &open_webui_image ghcr.io/open-webui/open-webui:v0.6.15
-  ollama: &ollama_image ollama/ollama:0.5.11
-  dcgm: &dcgm_image nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0-ubuntu22.04
-  alertmanager: &alertmanager_image prom/alertmanager:v0.28.1
-  loki: &loki_image grafana/loki:3.4.2
-  promtail: &promtail_image grafana/promtail:3.4.2
-  presidio_analyzer: &presidio_analyzer_image mcr.microsoft.com/presidio-analyzer:2.2.33
-  presidio_anonymizer: &presidio_anonymizer_image mcr.microsoft.com/presidio-anonymizer:2.2.33
+  vllm: &vllm_image vllm/vllm-openai
+  litellm: &litellm_image litellm/litellm
+  open_webui: &open_webui_image ghcr.io/open-webui/open-webui
+  ollama: &ollama_image ollama/ollama
+  dcgm: &dcgm_image nvcr.io/nvidia/k8s/dcgm-exporter
+  alertmanager: &alertmanager_image prom/alertmanager
+  loki: &loki_image grafana/loki
+  promtail: &promtail_image grafana/promtail
+  presidio_analyzer: &presidio_analyzer_image mcr.microsoft.com/presidio-analyzer
+  presidio_anonymizer: &presidio_anonymizer_image mcr.microsoft.com/presidio-anonymizer
 
 services:
   vllm:
@@ -23,6 +23,7 @@ services:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}
     volumes:
       - huggingface-cache:/root/.cache/huggingface
+      - ${VLLM_MODELS_DIR:-./models}:/models:ro
     command:
       - --model
       - ${VLLM_MODEL}
@@ -38,8 +39,6 @@ services:
       - ${VLLM_MAX_NUM_SEQS}
       - --max-num-batched-tokens
       - "8192"
-      - --kv-cache-dtype
-      - fp8
       - --enable-prefix-caching
       - --limit-mm-per-prompt
       - '{"image": 0, "audio": 0}'
@@ -122,7 +121,11 @@ services:
     ports:
       - "127.0.0.1:4000:4000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
+      test:
+        - CMD
+        - /app/.venv/bin/python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness')"
       interval: 30s
       timeout: 10s
       retries: 5
@@ -179,7 +182,7 @@ services:
       OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY}
       ENABLE_SIGNUP: "false"
-      DEFAULT_MODELS: gemma-4-31b
+      DEFAULT_MODELS: gemma-4-12b
       ENABLE_DIRECT_CONNECTIONS: "true"
       ENABLE_OAUTH_SIGNUP: ${ENABLE_OAUTH_SIGNUP:-false}
       OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
@@ -229,10 +232,14 @@ services:
     image: prom/prometheus:v2.55.1
     container_name: ai-prometheus
     restart: unless-stopped
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/prometheus/alerts:/etc/prometheus/alerts:ro
+      - ./scripts/prometheus-entrypoint.sh:/etc/prometheus/entrypoint.sh:ro
       - prometheus-data:/prometheus
+    entrypoint: ["/bin/sh", "/etc/prometheus/entrypoint.sh"]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
