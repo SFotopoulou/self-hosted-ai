@@ -29,7 +29,7 @@ Team laptops
 ┌─────────────────────────────────────────────────────────┐
 │  GPU server (localhost bindings only)                   │
 │                                                         │
-│  Open WebUI :8080 ──► LiteLLM :4000 ──► vLLM :8000     │
+│  Open WebUI :8080 ──► LiteLLM :4000 ──► vLLM :8000      │
 │       │                      │              │           │
 │       └── RAG ──► Ollama (CPU embeddings)               │
 │                              │              │           │
